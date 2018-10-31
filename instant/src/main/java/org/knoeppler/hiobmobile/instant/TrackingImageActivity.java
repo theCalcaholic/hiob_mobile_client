@@ -1,13 +1,29 @@
 package org.knoeppler.hiobmobile.instant;
 
+import android.Manifest;
 import android.annotation.SuppressLint;
+import android.content.pm.PackageManager;
+import android.hardware.camera2.CameraAccessException;
+import android.hardware.camera2.CameraCaptureSession;
+import android.hardware.camera2.CameraDevice;
+import android.hardware.camera2.CameraManager;
+import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.CaptureResult;
+import android.hardware.camera2.TotalCaptureResult;
+import android.support.annotation.NonNull;
 import android.support.v7.app.ActionBar;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
 import android.os.Handler;
+import android.util.Log;
 import android.view.MotionEvent;
+import android.view.Surface;
+import android.view.SurfaceView;
 import android.view.View;
-import android.content.Intent;
+import android.widget.Toast;
+
+import java.util.Collections;
+import java.util.List;
 
 /**
  * An example full-screen activity that shows and hides the system UI (i.e.
@@ -18,7 +34,7 @@ public class TrackingImageActivity extends AppCompatActivity {
      * Whether or not the system UI should be auto-hidden after
      * {@link #AUTO_HIDE_DELAY_MILLIS} milliseconds.
      */
-    private static final boolean AUTO_HIDE = true;
+    private static final boolean AUTO_HIDE = false;
 
     /**
      * If {@link #AUTO_HIDE} is set, the number of milliseconds to wait after
@@ -30,9 +46,38 @@ public class TrackingImageActivity extends AppCompatActivity {
      * Some older devices needs a small delay between UI widget updates
      * and a change of the status and navigation bar.
      */
+    private static final int MY_CAMERA_PERMISSION_CODE = 100;
+    private static final int CAMERA_REQUEST = 1888;
     private static final int UI_ANIMATION_DELAY = 300;
+    private  CameraDevice mCamera;
+    private CameraDevice.StateCallback mCameraCallback = null;
     private final Handler mHideHandler = new Handler();
-    private View mContentView;
+    private SurfaceView mContentView;
+    private Surface mCameraView;
+    private CaptureRequest.Builder mPreviewRequestBuilder;
+    private CaptureRequest mPreviewRequest;
+    private CameraCaptureSession mCaptureSession;
+    private CameraCaptureSession.CaptureCallback mCaptureCallback
+            = new CameraCaptureSession.CaptureCallback() {
+
+        private void process(CaptureResult result) {
+        }
+
+        @Override
+        public void onCaptureProgressed(@NonNull CameraCaptureSession session,
+                                        @NonNull CaptureRequest request,
+                                        @NonNull CaptureResult partialResult) {
+            //process(partialResult);
+        }
+
+        @Override
+        public void onCaptureCompleted(@NonNull CameraCaptureSession session,
+                                       @NonNull CaptureRequest request,
+                                       @NonNull TotalCaptureResult result) {
+            process(result);
+        }
+    };
+    private final String TAG = "HIOB.TrackingImageAct";
     private final Runnable mHidePart2Runnable = new Runnable() {
         @SuppressLint("InlinedApi")
         @Override
@@ -62,7 +107,6 @@ public class TrackingImageActivity extends AppCompatActivity {
             mControlsView.setVisibility(View.VISIBLE);
         }
     };
-    private Intent cameraIntent;
     private boolean mVisible;
     private final Runnable mHideRunnable = new Runnable() {
         @Override
@@ -89,12 +133,21 @@ public class TrackingImageActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        if (!getPackageManager().hasSystemFeature(PackageManager.FEATURE_CAMERA))
+        {
+            String msg = "This app requires a camera to be run!";
+            Toast.makeText(this, msg,
+                    Toast.LENGTH_SHORT).show();
+            Log.e(TAG, msg);
+            System.exit(0);
+        }
+
         setContentView(R.layout.activity_tracking_image);
 
         mVisible = true;
         mControlsView = findViewById(R.id.fullscreen_content_controls);
         mContentView = findViewById(R.id.fullscreen_content);
-
+        mCameraCallback = createCameraCallback();
 
         // Set up the user interaction to manually show or hide the system UI.
         mContentView.setOnClickListener(new View.OnClickListener() {
@@ -104,10 +157,145 @@ public class TrackingImageActivity extends AppCompatActivity {
             }
         });
 
+
+
         // Upon interacting with UI controls, delay any scheduled hide()
         // operations to prevent the jarring behavior of controls going away
         // while interacting with the UI.
         findViewById(R.id.dummy_button).setOnTouchListener(mDelayHideTouchListener);
+
+        if (checkSelfPermission(Manifest.permission.CAMERA)
+                != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.CAMERA},
+                    MY_CAMERA_PERMISSION_CODE);
+        } else {
+            requestCameraDelayed();
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String permissions[],
+                                           int[] grantResults)
+    {
+        boolean isGranted = grantResults.length > 0
+                && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+        switch (requestCode)
+        {
+            case MY_CAMERA_PERMISSION_CODE:
+                if( isGranted ) {
+                    requestCameraDelayed();
+                }
+                break;
+        }
+    }
+
+    private CameraDevice.StateCallback createCameraCallback()
+    {
+        return  new CameraDevice.StateCallback() {
+
+            @Override
+            public void onDisconnected(CameraDevice device)
+            {
+                onCameraDisconnected(device);
+            }
+
+            @Override
+            public void onOpened(CameraDevice device)
+            {
+                onCameraOpened(device);
+            }
+
+            @Override
+            public void onError(CameraDevice device, int errId)
+            {
+                onCameraError(device, errId);
+            }
+        };
+    }
+
+
+    private void onCameraDisconnected(CameraDevice device)
+    {
+        mCamera = null;
+    }
+
+    private void onCameraOpened(CameraDevice device)
+    {
+        mCamera = device;
+        Surface surface = mContentView.getHolder().getSurface();
+        List<Surface> surfaces = Collections.singletonList(surface);
+        try {
+            mPreviewRequestBuilder = mCamera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
+            mPreviewRequestBuilder.addTarget(surface);
+            mCamera.createCaptureSession(surfaces, sessionCallback, null);
+        }
+        catch (CameraAccessException e)
+        {
+            Log.e(TAG, "Error accessing camera! " + e.getReason());
+        }
+    }
+
+    private void onCameraError(CameraDevice device, int errId)
+    {
+        String msg = String.format("A camera error occured: %s", errId);
+        Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
+        Log.w(TAG, msg);
+    }
+
+    private void requestCameraDelayed()
+    {
+
+        Handler handler = new Handler();
+
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                requestCamera();
+            }
+        }, 3000);
+    }
+
+    private void requestCamera(){
+
+        if (checkSelfPermission(Manifest.permission.CAMERA)
+                != PackageManager.PERMISSION_GRANTED)
+        {
+            throw new SecurityException("No permission to access the camera! " +
+                    "Ensure this permission has been granted, before calling " +
+                    "TrackingImageActivity.requestCamera.");
+        }
+
+        if (mCamera != null)
+        {
+            mCamera.close();
+            mCamera = null;
+        }
+
+        CameraManager manager = (CameraManager)getSystemService(CAMERA_SERVICE);
+        String[] ids = new String[]{};
+        try {
+            ids = manager.getCameraIdList();
+        }
+        catch (CameraAccessException e)
+        {
+            Log.d(TAG, Log.getStackTraceString(e));
+        }
+
+        if (ids.length == 0)
+        {
+            Toast.makeText(this, "ERROR: Could not find any cameras!",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        try
+        {
+            manager.openCamera(ids[0], mCameraCallback, null);
+        }
+        catch(CameraAccessException e)
+        {
+            Toast.makeText(this, "Error opening camera", Toast.LENGTH_SHORT).show();
+        }
     }
 
     @Override
@@ -162,4 +350,28 @@ public class TrackingImageActivity extends AppCompatActivity {
         mHideHandler.removeCallbacks(mHideRunnable);
         mHideHandler.postDelayed(mHideRunnable, delayMillis);
     }
+
+    private CameraCaptureSession.StateCallback sessionCallback = new CameraCaptureSession.StateCallback() {
+        @Override
+        public void onConfigured(@NonNull CameraCaptureSession session) {
+            Log.i(TAG, "capture session configured.");
+            mCaptureSession = session;
+            mPreviewRequestBuilder.set(CaptureRequest.CONTROL_AF_MODE,
+                    CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO);
+            mPreviewRequestBuilder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF);
+            mPreviewRequest = mPreviewRequestBuilder.build();
+            try {
+                mCaptureSession.setRepeatingRequest(mPreviewRequest, mCaptureCallback, null);
+            }
+            catch(CameraAccessException e)
+            {
+                Log.e(TAG, "Error opening camera");
+            }
+        }
+
+        @Override
+        public void onConfigureFailed(@NonNull CameraCaptureSession session) {
+            Log.e(TAG, "capture session configuration failed!" + session);
+        }
+    };
 }
